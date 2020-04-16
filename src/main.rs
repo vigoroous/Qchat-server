@@ -1,7 +1,10 @@
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{/*mpsc,*/Mutex};
-use tokio::io::{AsyncReadExt /*, AsyncWriteExt*/};
+use tokio::io::{AsyncRead};
+use tokio::stream::{Stream, StreamExt};
 //use std::collections::HashMap;
+use std::task::{Poll, Context};
+use std::pin::Pin;
 use std::env;
 use std::error::Error;
 use std::net::SocketAddr;
@@ -73,8 +76,8 @@ impl Shared {
 }
 
 struct Server {
-        //rework
-        peers: Mutex<Vec<(String, SocketAddr)>>,
+        //rework_add_tx
+        peers: Mutex<Vec<SocketAddr>>,
 }
 
 impl Server {
@@ -84,22 +87,59 @@ impl Server {
                 peers: Mutex::new(Vec::new()),
             }
         }
-        async fn push_new_peer(self: &Self, name: &String, addr: &SocketAddr) {
-            self.peers.lock().await.push((String::from(name), addr.clone()));
-            println!("pushing new peer: ({}, {})", name, addr);
-            println!("new length of peers vec: {}", self.len().await);
-        }
-        async fn remove_peer(self: &Self, name: &String) {
+        //rework to peer
+        async fn push_new_peer(self: &Self, addr: SocketAddr) {
+            //pushing address
             let mut sync_peers = self.peers.lock().await;
-            let index = sync_peers.iter().position(|(name_got, _)| name_got==name).expect("filed to find name");
+            sync_peers.push(addr);
+            println!("pushing new peer: ({})", addr);
+            println!("new length of peers vec: {}", sync_peers.len());
+        }
+        async fn remove_by_addr(self: &Self, addr: &SocketAddr) {
+            let mut sync_peers = self.peers.lock().await;
+            let index = sync_peers.iter().position(|addr_got| addr_got==addr).expect("filed to find peer");
             sync_peers.remove(index);
-            println!("removing peer {} at {}", name, index);
+            println!("removing peer {} at {}", addr, index);
             println!("new length of peers vec: {}", sync_peers.len());
         }
         async fn len(self: &Self) -> usize {
             return self.peers.lock().await.len();
         }
 }
+
+struct Peer {
+    stream: TcpStream,
+    //add rx,
+}
+
+impl Peer {
+    async fn new(state: Arc<Server>, stream: TcpStream) -> Self {
+        let addr = stream.peer_addr().expect("failed to get addr");
+        state.push_new_peer(addr).await;
+        Peer {
+            stream: stream,
+        }
+    }
+}
+
+impl Stream for Peer {
+//    type Item = Result<(String, usize), Box<dyn Error>>;
+    type Item = (String, usize);
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut buf = [0;512];
+        let n = match Pin::new(&mut self.stream).poll_read(cx, &mut buf) {
+            Poll::Ready(Ok(num_bytes_read)) => num_bytes_read,
+            Poll::Ready(Err(_)) => 0,
+            Poll::Pending => return Poll::Pending,
+        };
+        if n==0 {return Poll::Ready(None);}
+        let msg = String::from_utf8(buf[0..n].to_vec()).unwrap();
+        return Poll::Ready(Some((msg, n)));
+    }
+
+}
+
 
 /// Process an individual chat client
 async fn process(
@@ -108,43 +148,34 @@ async fn process(
     addr: SocketAddr,
 ) -> Result<(), Box<dyn Error>> {
 
-    // Read stream to get the username.
+        //setting new peer
+        let mut peer = Peer::new(state.clone(), stream).await;
+
+        // Read stream to get the username.
 	//REDO_____________________________
-        let (username, n) = read_msg(&mut stream, &addr).await.unwrap();
-        if n==0 {return Ok(());}
+        let (username, _n) = match peer.next().await {
+            Some((msg, n)) => (msg, n),
+            None => {
+                state.remove_by_addr(&addr).await;
+                return Ok(());
+            },
+        };
 	//_________________________________
 	//assert_eq!(username, "piloswine");
+
 	println!("connected {} on {}", username, addr);
-	
-        state.push_new_peer(&username, &addr).await;
-        //println!("connected peers: {}", state.peers.len());
-	
+
+        //to-do: setting event stream
+
         loop {
-            let (msg, n) = read_msg(&mut stream, &addr).await.unwrap();
-            if n==0 {
-                state.remove_peer(&username).await;
-                return Ok(());
-            }
+            let (msg, _n) = match peer.next().await {
+                Some((msg, n)) => (msg, n),
+                None => {
+                    state.remove_by_addr(&addr).await;
+                    return Ok(());
+                },
+            };
             println!("From {} got: {}", username, msg);
 	}
 	//Ok(())
-}
-
-async fn read_msg(stream: &mut TcpStream, addr: &SocketAddr) -> Result<(String, usize), Box<dyn Error>> {
-    let mut buf = [0;512];
-    let n = match stream.read(&mut buf).await {
-            Ok(n) => {
-                    if n==0 {
-                            println!("socket disconnected at {}", addr);
-                            return Ok((String::from(""), 0));
-                    }
-                    n
-            }
-            Err(e) => {
-                    println!("error on read socket at {}: {}", addr, e);
-                    return Err(Box::new(e));
-            }
-    };
-    let msg = String::from_utf8(buf[0..n].to_vec()).unwrap();
-    return Ok((msg, n));
 }
