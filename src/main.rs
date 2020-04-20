@@ -108,9 +108,11 @@ impl Server {
             println!("removing peer {}", addr);
             println!("new length of peers vec: {}", sync_peers.len());
         }
+		/*
         async fn len(&self) -> usize {
             return self.peers.lock().await.len();
         }
+		*/
         async fn broadcast(&self, sender: SocketAddr, msg: &str) {
             let mut sync_peers = self.peers.lock().await;
             for peer in sync_peers.iter_mut() {
@@ -210,8 +212,9 @@ async fn process(
         loop {
             match peer.next().await {
                 Some(Message::Broadcast(msg)) => {
-                    server.broadcast(addr, &msg).await;
                     println!("From {} got: {}; broadcasting...", username, msg);
+                    let msg = format!("{{\"name\":\"{}\", \"data\":\"{}\"}}", username, msg);
+                    server.broadcast(addr, &msg).await;
                 },
                 Some(Message::Received(msg)) => {
                     peer.write_stream(msg).await;
