@@ -33,19 +33,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("server running on {}", addr);
 
 //for debug settin 3 servers
-    for _i in 0..3 {servers.add_server(Arc::new(Server::new())).await;}
+    for i in 1..4 {
+        let name = format!("server {}", i);
+        servers.add_server(Arc::new(Server::new(name))).await;
+    }
     println!("running {} servers", servers.len().await);
+
+    let servers = Arc::new(servers);
 
     loop {
         // Asynchronously wait for an inbound TcpStream.
         let (stream, addr) = listener.accept().await?;
 
-        //template for future server choose
-        let server = servers.choose_server().await.expect("failed to set server");
+        let servers_clone = servers.clone();
 
         // Spawn our handler to be run asynchronously.
         tokio::spawn(async move {
-            if let Err(e) = process(server, stream, addr).await {
+            if let Err(e) = process(servers_clone, stream, addr).await {
                 println!("an error occurred; error = {:?}", e);
             }
         });
@@ -70,27 +74,40 @@ impl Shared {
                     servers: Mutex::new(Vec::new()),
 		}
 	}
-        async fn add_server(&mut self, server: Arc<Server>) {
-            self.servers.lock().await.push(server);
+    async fn add_server(&mut self, server: Arc<Server>) {
+        self.servers.lock().await.push(server);
+    }
+    async fn choose_server(&self) -> Result<Arc<Server>, Box<dyn Error>> {
+        let servers = self.servers.lock().await;
+        return Ok(servers[0].clone());
+    }
+    async fn len(&self) -> usize {
+        return self.servers.lock().await.len();
+    }
+    async fn servers_to_json_arr(&self) -> String {
+        let servers = self.servers.lock().await;
+        let mut iter = servers.iter();
+        let mut json_arr = format!("[ \"{}", iter.next().expect("not enought servers").name);
+        while let Some(v) = iter.next() {
+            json_arr.push_str("\", \"");
+            json_arr.push_str(&v.name);
         }
-        async fn choose_server(&mut self) -> Result<Arc<Server>, Box<dyn Error>> {
-            let servers = self.servers.lock().await;
-            return Ok(servers[0].clone());
-        }
-        async fn len(&self) -> usize {
-            return self.servers.lock().await.len();
-        }
+        json_arr.push_str("\" ]");
+        return json_arr;
+    }
 }
 
 struct Server {
         //rework_add_tx
+        name: String,
         peers: Mutex<HashMap<SocketAddr, Tx>>,
 }
 
 impl Server {
         //rework
-        fn new() -> Self {
+        fn new(name: String) -> Self {
             Server {
+                name: name,
                 peers: Mutex::new(HashMap::new()),
             }
         }
@@ -128,25 +145,24 @@ enum Message {
     Broadcast(String),
 }
 
-struct Peer {
+//MAKE DUMMY PEER
+struct DummyPeer {
     stream: TcpStream,
-    rx: Rx,
 }
 
-impl Peer {
-    async fn new(server: Arc<Server>, stream: TcpStream) -> Self {
-        let addr = stream.peer_addr().expect("failed to get addr");
+struct Peer {
+    peer: DummyPeer,
+    rx: Rx,
+    //rx: Option<Rx>,
+}
 
-        // Create a channel for this peer
-        let (tx, rx) = mpsc::unbounded_channel();
-
-        server.push_new_peer(addr, tx).await;
-        Peer {
+impl DummyPeer {
+    async fn new(stream: TcpStream) -> Self {
+        DummyPeer {
             stream: stream,
-            rx: rx,
         }
     }
-    async fn write_stream(&mut self, msg: String) {
+    async fn write_stream(&mut self, msg: &str) {
         self.stream.write_all(msg.as_bytes()).await.expect("failed to write to peers");
     }
     async fn read_stream(&mut self) -> Option<String> {
@@ -161,18 +177,39 @@ impl Peer {
     }
 }
 
+impl Peer {
+    async fn new(server: Arc<Server>, peer: DummyPeer) -> Self {
+        let addr = peer.stream.peer_addr().expect("failed to get addr");
+
+        // Create a channel for this peer
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        server.push_new_peer(addr, tx).await;
+        Peer {
+            peer: peer,
+            rx: rx,
+        }
+    }
+    async fn write_stream(&mut self, msg: &str) {
+        self.peer.write_stream(msg).await;
+    }
+    async fn _read_stream(&mut self) -> Option<String> {
+        return self.peer.read_stream().await;
+    }
+}
+
 impl Stream for Peer {
 //    type Item = Result<(String, usize), Box<dyn Error>>;
     type Item = Message;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-
+        
         if let Poll::Ready(Some(v)) = Pin::new(&mut self.rx).poll_next(cx) {
             return Poll::Ready(Some(Message::Received(v)));
         }
 
         let mut buf = [0;512]; //NEED TO CHANHGE THIS BUFFER
-        let n = match Pin::new(&mut self.stream).poll_read(cx, &mut buf) {
+        let n = match Pin::new(&mut self.peer.stream).poll_read(cx, &mut buf) {
             Poll::Ready(Ok(num_bytes_read)) => num_bytes_read,
             Poll::Ready(Err(_)) => 0,
             Poll::Pending => return Poll::Pending,
@@ -187,25 +224,35 @@ impl Stream for Peer {
 
 /// Process an individual chat client
 async fn process(
-    server: Arc<Server>,
+    servers: Arc<Shared>,
     stream: TcpStream,
     addr: SocketAddr,
 ) -> Result<(), Box<dyn Error>> {
 
-        //setting new peer
-        let mut peer = Peer::new(server.clone(), stream).await;
+    //setting new dummy_peer
+    let mut dummy_peer = DummyPeer::new(stream).await;
 
-        // Read stream to get the username.
+    // Read stream to get the username.
 	//REDO_____________________________
-        let username = match peer.read_stream().await {
+        let username = match dummy_peer.read_stream().await {
             Some(msg) => msg,
             None => {
-                server.remove_by_addr(&addr).await;
                 return Ok(());
             },
         };
 	//_________________________________
 	//assert_eq!(username, "piloswine");
+
+    //debug
+    let servers_json = &servers.servers_to_json_arr().await;
+    println!("Sending servers {}", servers_json);
+
+    dummy_peer.write_stream(servers_json).await;
+
+    let server = servers.choose_server().await.expect("failed to get server");
+    println!("connecting {} on {}", username, server.name);
+
+    let mut peer = Peer::new(server.clone(), dummy_peer).await;
 
 	println!("connected {} on {}", username, addr);
 
@@ -217,7 +264,7 @@ async fn process(
                     server.broadcast(addr, &msg).await;
                 },
                 Some(Message::Received(msg)) => {
-                    peer.write_stream(msg).await;
+                    peer.write_stream(&msg).await;
                 },
                 None => {
                     server.remove_by_addr(&addr).await;
