@@ -12,6 +12,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::string::String;
 use std::vec::Vec;
+use serde_json::json;
+use serde_repr::*;
+use serde::{Serialize, Deserialize};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -71,29 +74,26 @@ impl Shared {
         //rework
 	fn new() -> Self {
 		Shared {
-                    servers: Mutex::new(Vec::new()),
+            servers: Mutex::new(Vec::new()),
 		}
 	}
     async fn add_server(&mut self, server: Arc<Server>) {
         self.servers.lock().await.push(server);
     }
-    async fn choose_server(&self) -> Result<Arc<Server>, Box<dyn Error>> {
+    async fn choose_server(&self, pos: u32) -> Option<Arc<Server>> {
         let servers = self.servers.lock().await;
-        return Ok(servers[0].clone());
+		return match servers.get(pos as usize) {
+			Some(server) => Some(server.clone()),
+			None => None
+		};
     }
     async fn len(&self) -> usize {
         return self.servers.lock().await.len();
     }
     async fn servers_to_json_arr(&self) -> String {
         let servers = self.servers.lock().await;
-        let mut iter = servers.iter();
-        let mut json_arr = format!("[ \"{}", iter.next().expect("not enought servers").name);
-        while let Some(v) = iter.next() {
-            json_arr.push_str("\", \"");
-            json_arr.push_str(&v.name);
-        }
-        json_arr.push_str("\" ]");
-        return json_arr;
+		let json_vec:Vec<&str> = servers.iter().map(|x| x.name.as_str()).collect();
+        return serde_json::to_string(&json_vec).unwrap();
     }
 }
 
@@ -190,12 +190,21 @@ impl Peer {
             rx: rx,
         }
     }
-    async fn write_stream(&mut self, msg: &str) {
-        self.peer.write_stream(msg).await;
+    async fn write_stream(&mut self, msg: &PeerMessage) {
+		let msg = serde_json::to_string(msg).unwrap();
+        self.peer.write_stream(&msg).await;
     }
     async fn _read_stream(&mut self) -> Option<String> {
         return self.peer.read_stream().await;
     }
+	
+	async fn change_server(&mut self, addr: SocketAddr, server_old: Arc<Server>, server_new: Arc<Server>) {
+		server_old.remove_by_addr(&addr).await;
+		let (tx, rx) = mpsc::unbounded_channel();
+		self.rx = rx;
+		server_new.push_new_peer(addr, tx).await;
+        println!("moving peer {} to {}", addr, server_new.name);
+	}
 }
 
 impl Stream for Peer {
@@ -221,6 +230,18 @@ impl Stream for Peer {
 
 }
 
+#[derive(Serialize_repr, Deserialize_repr, PartialEq, Debug)]
+#[repr(u8)]
+enum MessageType {
+	ServerChoice, //0
+	Message, //1
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct PeerMessage {
+	message_type: MessageType,
+	message: String,
+}
 
 /// Process an individual chat client
 async fn process(
@@ -234,36 +255,51 @@ async fn process(
 
     // Read stream to get the username.
 	//REDO_____________________________
-        let username = match dummy_peer.read_stream().await {
-            Some(msg) => msg,
-            None => {
-                return Ok(());
-            },
-        };
+        let username = dummy_peer.read_stream().await.expect("failed to get username");
 	//_________________________________
 	//assert_eq!(username, "piloswine");
 
-    //debug
+    //debug, need to wrap in func mb________________________________
     let servers_json = &servers.servers_to_json_arr().await;
     println!("Sending servers {}", servers_json);
 
     dummy_peer.write_stream(servers_json).await;
 
-    let server = servers.choose_server().await.expect("failed to get server");
+	let server_choice = dummy_peer.read_stream().await.expect("failed to get choice");
+	let server_choice: PeerMessage = serde_json::from_str(&server_choice).unwrap();
+	println!("debug: ({:?})", server_choice);
+	if server_choice.message_type != MessageType::ServerChoice {
+		println!("oops got wrong message");
+		return Ok(());
+	}
+	
+	let server_choice = server_choice.message.parse::<u32>().expect("failed to parse choice");
+    let server = servers.choose_server(server_choice).await.expect("failed to get server");
     println!("connecting {} on {}", username, server.name);
 
     let mut peer = Peer::new(server.clone(), dummy_peer).await;
-
+    //______________________________________________________________
 	println!("connected {} on {}", username, addr);
 
         loop {
             match peer.next().await {
                 Some(Message::Broadcast(msg)) => {
-                    println!("From {} got: {}; broadcasting...", username, msg);
-                    let msg = format!("{{\"name\":\"{}\", \"data\":\"{}\"}}", username, msg);
-                    server.broadcast(addr, &msg).await;
+					let msg: PeerMessage = serde_json::from_str(&msg).unwrap();
+                    match msg.message_type {
+						MessageType::Message => {
+							println!("From {} got: {}; broadcasting...", username, msg.message);
+							let msg = json!({"name": username, "data": msg}).to_string();
+							server.broadcast(addr, &msg).await;						
+						},
+						MessageType::ServerChoice => {
+							let server_choice = msg.message.parse::<u32>().expect("failed to parse choice");
+							let server_new = servers.choose_server(server_choice).await.expect("failed to get server");
+							peer.change_server(addr, server.clone(), server_new).await;
+						},
+					};
                 },
                 Some(Message::Received(msg)) => {
+					let msg = PeerMessage{message_type: MessageType::Message, message: msg};
                     peer.write_stream(&msg).await;
                 },
                 None => {
