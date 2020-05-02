@@ -11,54 +11,26 @@ use std::sync::Arc;
 use tokio::prelude::*;
 
 //MAKE DUMMY PEER
-pub struct DummyPeer {
-    pub stream: TcpStream,
-}
-
 pub struct Peer {
     pub stream: TcpStream,
     pub rx: Rx,
     //rx: Option<Rx>,
 }
 
-impl DummyPeer {
-    pub async fn new(stream: TcpStream) -> Self {
-        DummyPeer {
-            stream: stream,
-        }
-    }
-    pub async fn write_stream(&mut self, msg: &str) {
-        self.stream.write_all(msg.as_bytes()).await.expect("failed to write to peers");
-    }
-    pub async fn read_stream(&mut self) -> Option<String> {
-        let mut buf = [0;512]; //NEED TO CHANHGE THIS BUFFER
-        let n = match self.stream.read(&mut buf).await {
-            Ok(n) => n,
-            Err(_) => {return None;},
-        };
-        if n==0 {return None;}
-        let msg = String::from_utf8(buf[0..n].to_vec()).unwrap();
-        return Some(msg);
-    }
-}
-
 impl Peer {
-    pub async fn new(server: Arc<Server>, peer: DummyPeer) -> Self {
-        let addr = peer.stream.peer_addr().expect("failed to get addr");
-
+    pub async fn new(stream: TcpStream, server: Arc<Server>) -> Self {
+        let addr = stream.peer_addr().expect("failed to get addr");
         // Create a channel for this peer
         let (tx, rx) = mpsc::unbounded_channel();
-
         server.push_new_peer(addr, tx).await;
         Peer {
-            stream: peer.stream,
+            stream: stream,
             rx: rx,
         }
     }
     pub async fn write_stream(&mut self, msg: &str) {
         self.stream.write_all(msg.as_bytes()).await.expect("failed to write to peers");
     }
-    
     pub async fn change_server(&mut self, addr: SocketAddr, server_old: Arc<Server>, server_new: Arc<Server>) {
         let tx = server_old.remove_by_addr(addr).await.unwrap();
         server_new.push_new_peer(addr, tx).await;

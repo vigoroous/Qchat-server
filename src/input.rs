@@ -47,6 +47,7 @@ async fn control(servers: Arc<Shared>, mut rx: Rx) {
             "add" | "a" => {
                 match iter.next() {
                     Some(v) => {
+                    	//hide in Shared like "remove" | "r"
                         servers.add_server(Arc::new(Server::new(v.into()))).await;
                         // UPDATE SERVERS
                         // to work on
@@ -58,6 +59,24 @@ async fn control(servers: Arc<Shared>, mut rx: Rx) {
                         println!("adding new server: {}", v);
                         servers.broadcast_all(&msg).await;
                         
+                    },
+                    None => {
+                        println!("server name missing");
+                    },
+                }
+            },
+            "remove" | "r" => {
+                match iter.next() {
+                    Some(v) => {
+                    	servers.remove_server_by_name(v.to_string()).await;
+                        //remake__________________________________________
+                        let msg = PeerMessage{
+                            message_type:MessageType::ServersList, 
+                            message:servers.servers_to_arr().await,
+                        };
+                        let msg = serde_json::to_string(&msg).unwrap();
+                        servers.broadcast_all(&msg).await;
+                        //________________________________________________
                     },
                     None => {
                         println!("server name missing");
@@ -84,6 +103,7 @@ async fn control(servers: Arc<Shared>, mut rx: Rx) {
                 println!("Available commands:");
                 println!("(a)dd <arg>       -print to add server, where arg - server name");
                 println!("(p)eers           -print to display connected peers (curenntly on all servers)");
+                println!("(r)emove <arg>    -print to remove server, where arg - server name");
                 println!("(s)ervers         -print to display available servers");
                 println!("(S)top            -print to stop current process");
                 println!("(h)elp            -print to show this message");

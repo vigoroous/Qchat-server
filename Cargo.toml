@@ -1,6 +1,6 @@
 [package]
 name = "simple_tcp_server"
-version = "0.1.2"
+version = "0.1.3"
 authors = ["Lysov Gleb <lysovg9@gmail.com>"]
 edition = "2018"
 

@@ -1,3 +1,4 @@
+use crate::message::*;
 use crate::Tx;
 use tokio::sync::{Mutex};
 use std::sync::Arc;
@@ -11,13 +12,16 @@ use std::error::Error;
 pub struct Shared {
         //rework
         pub servers: Mutex<Vec<Arc<Server>>>,
+        pub wait_room: Arc<Server>,
 }
 
+#[allow(dead_code)]
 impl Shared {
         //rework
     pub fn new() -> Self {
         Shared {
             servers: Mutex::new(Vec::new()),
+            wait_room: Arc::new(Server::new("wait_room".to_string())),
         }
     }
     pub async fn add_server(&self, server: Arc<Server>) {
@@ -43,6 +47,18 @@ impl Shared {
         for server in servers.iter() {
             server.broadcast_all(msg).await;
         }
+        self.wait_room.broadcast_all(msg).await;
+    }
+    pub async fn remove_server_by_name(&self, server_name: String) -> Option<()>{
+        let mut servers = self.servers.lock().await;
+        let pos = servers.iter_mut().position(|x| x.name == server_name)?;
+        let server_found = &servers[pos];
+        println!("found server {}", server_found.name);
+        server_found.move_peers_to(self.wait_room.clone(), -1).await?;
+        println!("succesfully moved peers from \"{}\" to \"{}\"", server_found.name, server_name);
+        println!("removing server: {}", server_name);
+        servers.remove(pos);
+        Some(())
     }
 }
 
@@ -85,7 +101,23 @@ impl Server {
             }
             //println!("new length of peers vec: {}", sync_peers.len());
         }
-        
+        pub async fn move_peers_to(&self, server_new: Arc<Server>, pos: i32) -> Option<()> {
+            let mut server_new_peers = server_new.peers.lock().await;
+            let mut peers = self.peers.lock().await;
+            let msg = PeerMessage{
+                message_type: MessageType::ForcedMove, 
+                message: pos,
+            };
+            let msg = serde_json::to_string(&msg).unwrap();
+            println!("start moving peers");
+            peers.iter()
+                 .for_each(|x| {
+                    x.1.send(msg.to_string()).expect("failed to move peer");
+                    server_new_peers.insert(*x.0, x.1.clone());
+                 });
+            peers.clear();
+            Some(())
+        }
         pub async fn len(&self) -> usize {
             return self.peers.lock().await.len();
         }
@@ -95,7 +127,6 @@ impl Server {
                 let _ = peer.1.send(msg.to_string());
             }
         }
-
         pub async fn broadcast(&self, sender: SocketAddr, msg: &str) {
             let sync_peers = self.peers.lock().await;
             for peer in sync_peers.iter() {

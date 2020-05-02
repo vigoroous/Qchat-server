@@ -14,6 +14,7 @@ pub enum MessageType {
     Message, //1
     ServersList,
     ServersStatus, //setup for fetching status
+    ForcedMove,
 
     Unknown,
 }
@@ -25,6 +26,7 @@ impl From<u64> for MessageType {
             1 => MessageType::Message,
             2 => MessageType::ServersList,
             3 => MessageType::ServersStatus,
+            4 => MessageType::ForcedMove,
             _ => MessageType::Unknown,
         }
     }

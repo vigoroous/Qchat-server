@@ -79,11 +79,19 @@ async fn process(
 ) -> Result<(), Box<dyn Error>> {
 
     //setting new dummy_peer
-    let mut dummy_peer = DummyPeer::new(stream).await;
+    let mut server = servers.wait_room.clone();
+    let mut peer = Peer::new(stream, server.clone()).await;
 
     // Read stream to get the username.
     //REDO_____________________________
-    let username = dummy_peer.read_stream().await.expect("failed to get username");
+    let username = match peer.next().await {
+        Some(Message::Broadcast(msg)) => msg,
+        _ => {
+            println!("erro occured");
+            server.remove_by_addr(addr).await.expect("failed to remove");
+            return Ok(());
+        }
+    };
     //_________________________________
     println!("got name {}", username);
     //assert_eq!(username, "piloswine");
@@ -92,20 +100,8 @@ async fn process(
         message_type: MessageType::ServersList,
         message: servers.servers_to_arr().await,
     };
-
     //println!("Sending servers {:?}", servers_json);
-    dummy_peer.write_stream(&serde_json::to_string(&servers_json).unwrap()).await;
-
-    let server_choice = dummy_peer.read_stream().await.expect("failed to get choice");
-    let server_choice: PeerMessage<u32> = serde_json::from_str(&server_choice).unwrap();
-    // println!("debug: ({:?})", server_choice);
-    if server_choice.message_type != MessageType::ServerChoice {
-        println!("oops got wrong message");
-        return Ok(());
-    }
-    
-    let mut server = servers.choose_server(server_choice.message).await.expect("no such server");
-    let mut peer = Peer::new(server.clone(), dummy_peer).await;
+    peer.write_stream(&serde_json::to_string(&servers_json).unwrap()).await;
     println!("connecting {} on {}", username, server.name);
     //______________________________________________________________
     // println!("connected {} on {}", username, addr);
@@ -145,22 +141,33 @@ async fn process(
                             peer.change_server(addr, server.clone(), server_new.clone()).await;
                             server = server_new;
                         },
-                        //*!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-                        MessageType::ServersStatus => {
-                            println!("setup for future");
-                            println!("but error for now");
-                        },
-                        MessageType::ServersList => {
-                            println!("unstable behavior :{:?}", msg);
-                        },
-                        //*!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-                        MessageType::Unknown => {
-                            println!("unknown message occured {:?}", msg);
+                        _v => {
+                            println!("unstable behavior ({:?}): {:?}", _v, msg);
                         },
                     };
                 },
                 Some(Message::Received(msg)) => {
-                    peer.write_stream(&msg).await;
+                    let msg_to_decode: Value = match serde_json::from_str(&msg) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            server.remove_by_addr(addr).await.unwrap();
+                            println!("failed to parse json message {:?}", msg);
+                            return Err(Box::new(e));
+                        },
+                    };
+                    match MessageType::from(msg_to_decode["message_type"].as_u64().unwrap()) {
+                        MessageType::ForcedMove => {
+                            let pos = {
+                                let msg_decoded:PeerMessage<i32> = serde_json::from_value(msg_to_decode).unwrap();
+                                msg_decoded.message
+                            };
+
+                            if pos == -1 { server = servers.wait_room.clone();}
+                            else { server = servers.servers.lock().await[pos as usize].clone();}
+                            peer.write_stream(&msg).await;
+                        },
+                        _ => peer.write_stream(&msg).await,
+                    }
                 },
                 None => {
                     server.remove_by_addr(addr).await.unwrap();
