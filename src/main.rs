@@ -86,14 +86,14 @@ async fn input_process(servers: Arc<Shared>) {
                     Some(v) => {
                         servers.add_server(Arc::new(Server::new(v.into()))).await;
                         // UPDATE SERVERS
-                        /* to work on
-                        let _msg = PeerMessage{
+                        // to work on
+                        let msg = PeerMessage{
                             message_type:MessageType::ServersList, 
                             message:servers.servers_to_arr().await,
                         };
                         let msg = serde_json::to_string(&msg).unwrap();
                         servers.broadcast_all(&msg).await;
-                        */
+                        
                     },
                     None => {
                         println!("server name missing");
@@ -302,28 +302,26 @@ impl Stream for Peer {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
 
-        let mut buf = [0;512]; //NEED TO CHANHGE THIS BUFFER
-        if let Poll::Ready(v) = Pin::new(&mut self.stream).poll_read(cx, &mut buf) {
-            match v {
-                Ok(v) => {
-                    if v == 0 {
-                        return Poll::Ready(None);
-                    };
-                    let msg = String::from_utf8(buf[0..v].to_vec()).unwrap();
-                    return Poll::Ready(Some(Message::Broadcast(msg)));
-                },
-                Err(e) => {
-                    println!("error on read {:?}", e);
-                    return Poll::Ready(None);
-                },
-            }
-        }
-
         if let Poll::Ready(Some(v)) = Pin::new(&mut self.rx).poll_next(cx) {
             return Poll::Ready(Some(Message::Received(v)));
         }
 
-        Poll::Pending
+        let mut buf = [0;512]; //NEED TO CHANHGE THIS BUFFER
+        let result = futures::ready!(Pin::new(&mut self.stream).poll_read(cx, &mut buf));
+
+        Poll::Ready( match result {
+            Ok(v) => {
+                if v == 0 { None }
+                else {
+                    let msg = String::from_utf8(buf[0..v].to_vec()).unwrap();
+                    Some(Message::Broadcast(msg))
+                }
+            },
+            Err(e) => {
+                println!("error on read {:?}", e);
+                None
+            },
+        })
     }
 
 }
@@ -403,10 +401,11 @@ async fn process(
     // println!("connected {} on {}", username, addr);
 
         loop {
-            println!("{} waiting on message", username);
+            let e = peer.rx.try_recv();
+            println!("sstar waiting{:?}", e);
             match peer.next().await {
                 Some(Message::Broadcast(msg)) => {
-                    println!("got msg {:?} on {}", msg, username);
+                    println!("1) got msg {:?} on {}", msg, username);
                     let msg: Value = match serde_json::from_str(&msg) {
                         Ok(v) => v,
                         Err(e) => {
@@ -454,7 +453,7 @@ async fn process(
                     };
                 },
                 Some(Message::Received(msg)) => {
-                    println!("got msg {:?} on {}", msg, username);
+                    println!("2) got msg {:?} on {}", msg, username);
                     peer.write_stream(&msg).await;
                 },
                 None => {
