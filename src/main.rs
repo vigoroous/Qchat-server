@@ -53,7 +53,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         // Asynchronously wait for an inbound TcpStream.
         let (stream, addr) = listener.accept().await?;
-
+        // stream.set_nodelay(true).expect("failed to set nodelay");
+        
         let servers_clone = servers.clone();
 
         // Spawn our handler to be run asynchronously.
@@ -147,6 +148,7 @@ async fn process(
                     };
                 },
                 Some(Message::Received(msg)) => {
+                    println!("sending {:?}", msg);
                     let msg_to_decode: Value = match serde_json::from_str(&msg) {
                         Ok(v) => v,
                         Err(e) => {

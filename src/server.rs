@@ -54,7 +54,14 @@ impl Shared {
         let pos = servers.iter_mut().position(|x| x.name == server_name)?;
         let server_found = &servers[pos];
         println!("found server {}", server_found.name);
-        server_found.move_peers_to(self.wait_room.clone(), -1).await?;
+
+        let msg = PeerMessage{
+            message_type: MessageType::ForcedMove, 
+            message: -1,
+        };
+        let msg = serde_json::to_string(&msg).unwrap();
+
+        server_found.move_peers_to(self.wait_room.clone(), &msg).await?;
         println!("succesfully moved peers from \"{}\" to \"{}\"", server_found.name, server_name);
         println!("removing server: {}", server_name);
         servers.remove(pos);
@@ -101,14 +108,9 @@ impl Server {
             }
             //println!("new length of peers vec: {}", sync_peers.len());
         }
-        pub async fn move_peers_to(&self, server_new: Arc<Server>, pos: i32) -> Option<()> {
+        pub async fn move_peers_to(&self, server_new: Arc<Server>, msg: &str) -> Option<()> {
             let mut server_new_peers = server_new.peers.lock().await;
             let mut peers = self.peers.lock().await;
-            let msg = PeerMessage{
-                message_type: MessageType::ForcedMove, 
-                message: pos,
-            };
-            let msg = serde_json::to_string(&msg).unwrap();
             println!("start moving peers");
             peers.iter()
                  .for_each(|x| {
