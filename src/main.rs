@@ -157,6 +157,7 @@ async fn process(
                             return Err(Box::new(e));
                         },
                     };
+                    let msg = format!("{};", msg);
                     match MessageType::from(msg_to_decode["message_type"].as_u64().unwrap()) {
                         MessageType::ForcedMove => {
                             let pos = {
