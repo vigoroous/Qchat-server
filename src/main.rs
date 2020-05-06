@@ -14,10 +14,12 @@ mod peer;
 mod server;
 mod message;
 mod input;
+mod db;
 use peer::*;
 use server::*;
 use message::*;
 use input::*;
+use db::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -43,10 +45,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let name = format!("server {}", i);
         servers.add_server(Arc::new(Server::new(name))).await;
     }
-    // let servers_clone = servers.clone();
-    // task::spawn(async move {
-    //     input_process_control(servers_clone).await;
-    // });
+
+    //handle database control
+    db_control().await;
+
+    //handle input control
     input_process_control(servers.clone()).await;
     println!("running {} servers", servers.len().await);
 
